@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Study Quiz</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#" id="homeLink">StudyQuiz</a>
+    <span class="tagline">Upload. Study. Check. Retake.</span>
+  </header>
+
+  <main class="shell">
+    <section id="setupView" class="panel setup-panel">
+      <div class="eyebrow">AI study practice</div>
+      <h1>Turn your study file into a complete multiple-choice quiz.</h1>
+      <p class="lead">The app reads the document, maps its topics, creates an appropriate number of questions, and checks your answers after you submit.</p>
+
+      <div class="mode-tabs" role="tablist" aria-label="Study source">
+        <button class="tab active" data-mode="file" type="button">Upload file</button>
+        <button class="tab" data-mode="topic" type="button">Enter topic</button>
+      </div>
+
+      <form id="fileForm" class="source-form">
+        <label class="upload-box" for="fileInput">
+          <input id="fileInput" name="file" type="file" accept=".pdf,.docx,.pptx,.txt,.md" hidden />
+          <strong id="fileLabel">Choose a study file</strong>
+          <span>PDF, DOCX, PPTX, TXT, or MD · up to 20 MB</span>
+        </label>
+        <button class="primary" type="submit">Read file and create quiz</button>
+      </form>
+
+      <form id="topicForm" class="source-form hidden">
+        <label class="field-label" for="topicInput">Study topic</label>
+        <textarea id="topicInput" rows="4" placeholder="Example: Photosynthesis and cellular respiration"></textarea>
+        <button class="primary" type="submit">Create quiz from topic</button>
+      </form>
+
+      <div id="loadingBox" class="loading-box hidden" aria-live="polite">
+        <div class="spinner" aria-hidden="true"></div>
+        <div>
+          <strong id="loadingTitle">Reading your material…</strong>
+          <p id="loadingText">The app is checking the full material and building topic coverage before writing questions.</p>
+        </div>
+      </div>
+      <p id="setupError" class="error hidden"></p>
+    </section>
+
+    <section id="quizView" class="hidden">
+      <div class="quiz-header panel">
+        <div>
+          <div class="eyebrow">Practice quiz</div>
+          <h1 id="quizTitle"></h1>
+          <p id="quizSummary" class="lead small"></p>
+        </div>
+        <div class="quiz-meta">
+          <strong id="questionCount"></strong>
+          <span id="readStats"></span>
+        </div>
+      </div>
+
+      <div class="quiz-layout">
+        <aside class="panel navigator">
+          <div class="nav-title">Questions</div>
+          <div id="questionNav" class="question-nav"></div>
+          <div id="answerStatus" class="answer-status"></div>
+        </aside>
+
+        <div>
+          <form id="quizForm" class="questions"></form>
+          <div class="submit-bar panel">
+            <div>
+              <strong id="submitStatus">Answer every question to submit.</strong>
+              <span>Your answers are not checked until submission.</span>
+            </div>
+            <button id="submitQuiz" class="primary" type="button" disabled>Submit answers</button>
+          </div>
+          <p id="quizError" class="error hidden"></p>
+        </div>
+      </div>
+    </section>
+
+    <section id="resultView" class="hidden">
+      <div class="panel result-summary">
+        <div>
+          <div class="eyebrow">Quiz result</div>
+          <h1 id="scoreText"></h1>
+          <p id="scoreSubtext" class="lead small"></p>
+        </div>
+        <button id="retakeBtn" class="primary" type="button">Retake with shuffled order</button>
+      </div>
+
+      <div class="review-toolbar panel">
+        <strong>Review your answers</strong>
+        <div class="review-filters">
+          <button class="filter active" data-filter="all" type="button">All</button>
+          <button class="filter" data-filter="incorrect" type="button">Incorrect</button>
+          <button class="filter" data-filter="correct" type="button">Correct</button>
+        </div>
+      </div>
+
+      <div id="reviewList" class="review-list"></div>
+      <p id="resultError" class="error hidden"></p>
+    </section>
+  </main>
+
+  <footer class="footer">StudyQuiz · simple practice from your own material</footer>
+  <script src="/app.js" defer></script>
+</body>
+</html>
