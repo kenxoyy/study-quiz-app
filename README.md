@@ -1,39 +1,52 @@
-# StudyQuiz
+# StudyQuiz — optimized version
 
-A minimalist Quipper-inspired study website that turns an uploaded study file into a multiple-choice quiz.
+A minimalist Quipper-inspired study website that turns an uploaded study file into a multiple-choice quiz, grades the learner, shows a review, and supports shuffled retakes.
 
-## What it does
+## What changed in this optimized version
 
-- Upload **PDF, DOCX, PPTX, TXT, or Markdown** files.
-- Extracts the complete readable text from the file.
-- Splits long material into sections and analyzes every section.
-- Builds a full-document topic coverage map.
-- Chooses an adaptive number of questions (10–60 for uploaded files).
-- Generates 4-choice MCQs across the identified topics.
-- Requires the learner to answer every question before submission.
-- Grades answers on the server, then reveals score, correct answers, and explanations.
-- Lets the learner filter review to all/correct/incorrect questions.
-- Retakes shuffle **both question order and choice order**.
-- Correct answers are not sent to the browser before submission.
+This version is designed to use substantially fewer API tokens and reduce accidental rate-limit/cost spikes.
+
+- The accepted document is read in full in one coverage pass instead of sending many overlapping chunks to the API.
+- A compact whole-document coverage map is created first.
+- The quiz is then generated from that compact map in one second API call.
+- Maximum quiz size is 30 questions by default.
+- Files are limited to 10 MB and 12,000 extracted words by default. Files beyond the text limit are rejected instead of being silently truncated, so an accepted file is still processed thoroughly.
+- Identical documents/topics are cached in server memory for 12 hours by default, so regenerating the same material can avoid another API generation.
+- Retakes never call the AI; they only reshuffle the already-generated questions and answer choices.
+- Only one new quiz generation runs at a time by default.
+- A short global cooldown between uncached generations reduces token-per-minute spikes.
+- Basic per-IP generation limits protect a public deployment from repeated API usage.
+- OpenAI 429/rate-limit and credential errors are converted to clearer user-facing messages.
+
+## Core study features
+
+- Upload PDF, DOCX, PPTX, TXT, or Markdown files.
+- Create a coverage map across the accepted document.
+- Generate an adaptive number of four-choice MCQs.
+- Require every question to be answered before submission.
+- Grade answers on the server.
+- Reveal the score, correct/incorrect answers, explanations, and study points after submission.
+- Filter review to All / Incorrect / Correct.
+- Retake with shuffled question order and shuffled choice order.
+- Keep correct answers on the server until submission.
 
 ## Requirements
 
-- Node.js 20+ recommended
+- Node.js 20+
 - An OpenAI API key
-- VS Code (or any code editor)
+- VS Code or another code editor
 
-## Setup in VS Code
+## Local setup
 
-1. Open this folder in VS Code.
-2. Open the integrated terminal.
-3. Install packages:
+1. Open the project folder in VS Code.
+2. Install dependencies:
 
    ```bash
    npm install
    ```
 
-4. Copy `.env.example` to a new file named `.env`.
-5. Put your API key in `.env`:
+3. Copy `.env.example` to a new file named `.env`.
+4. Add your API key:
 
    ```env
    OPENAI_API_KEY=your_real_key_here
@@ -41,50 +54,56 @@ A minimalist Quipper-inspired study website that turns an uploaded study file in
    PORT=3000
    ```
 
-6. Start the website:
+5. Start the app:
 
    ```bash
    npm run dev
    ```
 
-7. Open:
+6. Open `http://localhost:3000`.
 
-   ```text
-   http://localhost:3000
-   ```
+## Render settings
 
-## Important notes
-
-### Scanned PDFs
-`pdf-parse` reads text-based/searchable PDFs. If a PDF is only scanned images, this starter returns a message asking for a searchable PDF or DOCX. OCR can be added later if needed.
-
-### API key security
-Never put the API key in `public/app.js` or `index.html`. Keep it only in `.env`. The browser talks to your Node.js backend, and only the backend calls the AI API.
-
-### Quiz sessions
-Quiz sessions are stored in server memory and expire after two hours. Restarting the Node server clears them. For deployment with many users, replace the in-memory `Map` with Redis or a database.
-
-### Adaptive question count
-For uploaded files, the server estimates a reasonable count from both document length and topic count, with a minimum of 10 and maximum of 60 questions. You can change this in `computeQuestionCount()` inside `services/quizGenerator.js`.
-
-## Project structure
+Use:
 
 ```text
-study-quiz-app/
-├─ public/
-│  ├─ index.html
-│  ├─ style.css
-│  └─ app.js
-├─ services/
-│  ├─ documentParser.js
-│  └─ quizGenerator.js
-├─ .env.example
-├─ .gitignore
-├─ package.json
-├─ README.md
-└─ server.js
+Build Command: npm install
+Start Command: npm start
 ```
 
-## Deployment
+In Render Environment Variables, set at minimum:
 
-Any Node.js host that supports environment variables can run this app. Set `OPENAI_API_KEY`, optionally set `OPENAI_MODEL`, then run `npm start`.
+```text
+OPENAI_API_KEY = your secret key
+OPENAI_MODEL = gpt-5.6-luna
+```
+
+Do not put the API key in GitHub or any file inside `public/`.
+
+## Optional controls
+
+These values can be changed in `.env` locally or in Render's Environment settings:
+
+```env
+MAX_FILE_MB=10
+MAX_DOCUMENT_WORDS=12000
+MAX_DOCUMENT_CHARS=90000
+MAX_QUESTIONS=30
+MAX_CONCURRENT_GENERATIONS=1
+GENERATION_LIMIT=4
+GENERATION_WINDOW_MINUTES=60
+GLOBAL_GENERATION_COOLDOWN_SECONDS=45
+QUIZ_CACHE_HOURS=12
+```
+
+### Why there is a document limit
+
+The goal is to guarantee that accepted material is actually read rather than quietly discarding later pages. If extracted text exceeds the configured word/character limit, the site asks the learner to split the material into smaller study files.
+
+### Cache behavior
+
+The cache is held in server memory. On Render, it can disappear whenever the service restarts or sleeps. A database/Redis cache would be the next step for a larger public site.
+
+### Scanned PDFs
+
+`pdf-parse` can extract text from searchable/text PDFs. Image-only scanned PDFs need OCR before this starter can read them.
