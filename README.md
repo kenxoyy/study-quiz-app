@@ -107,3 +107,9 @@ The cache is held in server memory. On Render, it can disappear whenever the ser
 ### Scanned PDFs
 
 `pdf-parse` can extract text from searchable/text PDFs. Image-only scanned PDFs need OCR before this starter can read them.
+
+## Quiz integrity and cooldown behavior
+
+- If a learner switches away from or hides the browser tab while a quiz attempt is active, the current attempt is automatically submitted. Any unanswered questions are counted as incorrect.
+- Manual submission still requires every question to be answered.
+- When the API returns a retry time for a generation-rate limit, the site stores the cooldown in the browser, displays the local retry time with a live countdown, and disables new quiz generation until the cooldown expires. Existing quiz retakes continue to work without new AI generation.

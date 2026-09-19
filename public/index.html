@@ -46,6 +46,11 @@
           <p id="loadingText">The app is checking the full material and building topic coverage before writing questions.</p>
         </div>
       </div>
+
+      <div id="cooldownBox" class="cooldown-box hidden" aria-live="polite">
+        <strong id="cooldownTitle">Quiz generation temporarily unavailable</strong>
+        <p id="cooldownText"></p>
+      </div>
       <p id="setupError" class="error hidden"></p>
     </section>
 
@@ -62,6 +67,11 @@
         </div>
       </div>
 
+      <div class="integrity-notice panel" role="note">
+        <strong>Quiz attempt rule</strong>
+        <span>If you leave or switch away from this browser tab while the quiz is active, your attempt will be submitted automatically. Unanswered questions will be counted as incorrect.</span>
+      </div>
+
       <div class="quiz-layout">
         <aside class="panel navigator">
           <div class="nav-title">Questions</div>
@@ -74,7 +84,7 @@
           <div class="submit-bar panel">
             <div>
               <strong id="submitStatus">Answer every question to submit.</strong>
-              <span>Your answers are not checked until submission.</span>
+              <span>Your answers are checked when you submit, or automatically if you leave this tab.</span>
             </div>
             <button id="submitQuiz" class="primary" type="button" disabled>Submit answers</button>
           </div>

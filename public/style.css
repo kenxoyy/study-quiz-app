@@ -111,6 +111,38 @@ textarea:focus, button:focus-visible, input:focus-visible { outline: 3px solid v
 .primary:disabled { background: #a9b5b0; cursor: not-allowed; }
 .hidden { display: none !important; }
 .error { padding: 12px 14px; border: 1px solid #edc2c2; background: var(--wrong-bg); color: #8f3030; border-radius: 8px; }
+
+.cooldown-box {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid #d8cba4;
+  background: #fffaf0;
+  border-radius: 9px;
+  color: #5f522b;
+}
+.cooldown-box strong { display: block; color: #4d431f; }
+.cooldown-box p { margin: 4px 0 0; font-size: .9rem; }
+
+.integrity-notice {
+  margin-bottom: 18px;
+  padding: 14px 18px;
+  display: grid;
+  gap: 3px;
+  border-left: 4px solid #9a7b2f;
+}
+.integrity-notice strong { color: #5d4a1d; }
+.integrity-notice span { color: var(--muted); font-size: .9rem; }
+
+.unanswered-note {
+  margin: 10px 0;
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: var(--wrong-bg);
+  color: #8f3030;
+  font-size: .88rem;
+  font-weight: 700;
+}
+
 .loading-box { margin-top: 22px; padding: 16px; border: 1px solid var(--line); border-radius: 10px; display: flex; gap: 14px; align-items: flex-start; }
 .loading-box p { margin: 4px 0 0; color: var(--muted); font-size: .9rem; }
 .spinner { width: 22px; height: 22px; border: 3px solid #dce8e4; border-top-color: var(--brand); border-radius: 50%; animation: spin .9s linear infinite; flex: 0 0 auto; }

@@ -7,8 +7,13 @@ const state = {
   quiz: null,
   answers: {},
   result: null,
-  filter: "all"
+  filter: "all",
+  submitting: false,
+  cooldownUntil: 0,
+  cooldownTimer: null
 };
+
+const COOLDOWN_STORAGE_KEY = "studyquiz-generation-cooldown-until";
 
 const views = {
   setup: $("#setupView"),
@@ -27,20 +32,105 @@ function showError(selector, message = "") {
   el.classList.toggle("hidden", !message);
 }
 
+function generationIsCoolingDown() {
+  return state.cooldownUntil > Date.now();
+}
+
+function refreshGenerationButtons(loading = false) {
+  const disabled = loading || generationIsCoolingDown();
+  $$("#fileForm button[type='submit'], #topicForm button[type='submit']").forEach((button) => {
+    button.disabled = disabled;
+  });
+}
+
 function setLoading(on, title, text) {
   const box = $("#loadingBox");
   box.classList.toggle("hidden", !on);
   if (title) $("#loadingTitle").textContent = title;
   if (text) $("#loadingText").textContent = text;
-  $$("#fileForm button, #topicForm button").forEach((b) => (b.disabled = on));
+  refreshGenerationButtons(on);
+}
+
+function formatRemaining(ms) {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours) return `${hours}h ${minutes}m ${seconds}s`;
+  if (minutes) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+function formatRetryTime(timestamp) {
+  const date = new Date(timestamp);
+  const now = new Date();
+  const sameDay = date.toDateString() === now.toDateString();
+  return new Intl.DateTimeFormat(undefined, {
+    ...(sameDay ? {} : { month: "short", day: "numeric" }),
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(date);
+}
+
+function clearCooldown() {
+  state.cooldownUntil = 0;
+  localStorage.removeItem(COOLDOWN_STORAGE_KEY);
+  $("#cooldownBox").classList.add("hidden");
+  if (state.cooldownTimer) clearInterval(state.cooldownTimer);
+  state.cooldownTimer = null;
+  refreshGenerationButtons(false);
+}
+
+function renderCooldown() {
+  if (!generationIsCoolingDown()) {
+    clearCooldown();
+    return;
+  }
+
+  const remaining = state.cooldownUntil - Date.now();
+  $("#cooldownBox").classList.remove("hidden");
+  $("#cooldownTitle").textContent = "Quiz generation temporarily unavailable";
+  $("#cooldownText").textContent = `Try again at ${formatRetryTime(state.cooldownUntil)} (in ${formatRemaining(remaining)}). The Create Quiz buttons are disabled until then. Existing quizzes can still be retaken without new AI generation.`;
+  refreshGenerationButtons(false);
+}
+
+function startCooldown(retryAt, retryAfterSeconds) {
+  let until = retryAt ? Date.parse(retryAt) : NaN;
+  if (!Number.isFinite(until) && Number(retryAfterSeconds) > 0) {
+    until = Date.now() + Number(retryAfterSeconds) * 1000;
+  }
+  if (!Number.isFinite(until) || until <= Date.now()) return;
+
+  state.cooldownUntil = until;
+  localStorage.setItem(COOLDOWN_STORAGE_KEY, String(until));
+  if (state.cooldownTimer) clearInterval(state.cooldownTimer);
+  renderCooldown();
+  state.cooldownTimer = setInterval(renderCooldown, 1000);
+}
+
+class RequestError extends Error {
+  constructor(message, data, status) {
+    super(message);
+    this.name = "RequestError";
+    this.data = data || {};
+    this.status = status;
+  }
 }
 
 async function requestJson(url, options = {}) {
   const response = await fetch(url, options);
   let data;
   try { data = await response.json(); } catch { data = {}; }
-  if (!response.ok) throw new Error(data.error || "Something went wrong.");
+  if (!response.ok) throw new RequestError(data.error || "Something went wrong.", data, response.status);
   return data;
+}
+
+function handleGenerationError(error) {
+  if (error?.status === 429) {
+    startCooldown(error.data?.retryAt, error.data?.retryAfterSeconds);
+    return showError("#setupError", "Generation is paused until the retry time shown below.");
+  }
+  showError("#setupError", error.message);
 }
 
 function switchMode(mode) {
@@ -60,6 +150,10 @@ $("#fileInput").addEventListener("change", (event) => {
 $("#fileForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   showError("#setupError");
+  if (generationIsCoolingDown()) {
+    renderCooldown();
+    return showError("#setupError", "Quiz generation is temporarily unavailable. Please wait until the cooldown ends.");
+  }
   const file = $("#fileInput").files?.[0];
   if (!file) return showError("#setupError", "Please choose a study file first.");
   if (file.size > MAX_LOCAL_FILE_BYTES) {
@@ -73,7 +167,7 @@ $("#fileForm").addEventListener("submit", async (event) => {
     const quiz = await requestJson("/api/quiz/from-file", { method: "POST", body: form });
     loadQuiz(quiz);
   } catch (error) {
-    showError("#setupError", error.message);
+    handleGenerationError(error);
   } finally {
     setLoading(false);
   }
@@ -82,6 +176,10 @@ $("#fileForm").addEventListener("submit", async (event) => {
 $("#topicForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   showError("#setupError");
+  if (generationIsCoolingDown()) {
+    renderCooldown();
+    return showError("#setupError", "Quiz generation is temporarily unavailable. Please wait until the cooldown ends.");
+  }
   const topic = $("#topicInput").value.trim();
   if (topic.length < 3) return showError("#setupError", "Enter a study topic first.");
 
@@ -94,7 +192,7 @@ $("#topicForm").addEventListener("submit", async (event) => {
     });
     loadQuiz(quiz);
   } catch (error) {
-    showError("#setupError", error.message);
+    handleGenerationError(error);
   } finally {
     setLoading(false);
   }
@@ -108,6 +206,7 @@ function loadQuiz(quiz) {
   state.quiz = quiz;
   state.answers = {};
   state.result = null;
+  state.submitting = false;
   $("#quizTitle").textContent = quiz.title;
   $("#quizSummary").textContent = quiz.summary || "Answer all questions, then submit to check your work.";
   $("#questionCount").textContent = `${quiz.questionCount} questions`;
@@ -185,36 +284,60 @@ function updateAnswerStatus() {
   });
 }
 
-$("#submitQuiz").addEventListener("click", async () => {
-  if (!state.quiz) return;
+async function submitCurrentQuiz({ autoSubmitted = false } = {}) {
+  if (!state.quiz || state.result || state.submitting) return;
+  state.submitting = true;
   showError("#quizError");
   $("#submitQuiz").disabled = true;
-  $("#submitQuiz").textContent = "Checking…";
+  $("#submitQuiz").textContent = autoSubmitted ? "Auto-submitting…" : "Checking…";
+
   try {
     const result = await requestJson(`/api/quiz/${state.quiz.sessionId}/submit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ attemptId: state.quiz.attemptId, answers: state.answers })
+      body: JSON.stringify({
+        attemptId: state.quiz.attemptId,
+        answers: state.answers,
+        autoSubmitted
+      }),
+      keepalive: autoSubmitted
     });
     state.result = result;
     state.filter = "all";
     renderResult();
     showView("result");
   } catch (error) {
+    state.submitting = false;
     showError("#quizError", error.message);
     updateAnswerStatus();
   } finally {
+    if (!state.result) state.submitting = false;
     $("#submitQuiz").textContent = "Submit answers";
   }
+}
+
+$("#submitQuiz").addEventListener("click", () => submitCurrentQuiz());
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "hidden") return;
+  const quizIsActive = state.quiz && !state.result && !views.quiz.classList.contains("hidden");
+  if (quizIsActive) submitCurrentQuiz({ autoSubmitted: true });
 });
 
 function renderResult() {
   const r = state.result;
   $("#scoreText").textContent = `${r.score}/${r.total} · ${r.percent}%`;
   const incorrect = r.total - r.score;
-  $("#scoreSubtext").textContent = incorrect === 0
-    ? "Perfect score. You can still retake to practice with a shuffled order."
-    : `${incorrect} question${incorrect === 1 ? "" : "s"} to review. Correct answers and explanations are shown below.`;
+  if (r.autoSubmitted) {
+    const unansweredText = r.unanswered
+      ? ` ${r.unanswered} unanswered question${r.unanswered === 1 ? " was" : "s were"} counted as incorrect.`
+      : "";
+    $("#scoreSubtext").textContent = `This attempt was submitted automatically because the quiz tab was left or hidden.${unansweredText} Review the answers below or retake with a shuffled order.`;
+  } else {
+    $("#scoreSubtext").textContent = incorrect === 0
+      ? "Perfect score. You can still retake to practice with a shuffled order."
+      : `${incorrect} question${incorrect === 1 ? "" : "s"} to review. Correct answers and explanations are shown below.`;
+  }
   $$(".filter").forEach((b) => b.classList.toggle("active", b.dataset.filter === state.filter));
   renderReviewList();
 }
@@ -246,6 +369,13 @@ function renderReviewList() {
     const h2 = document.createElement("h2");
     h2.textContent = item.question;
     card.append(label, h2);
+
+    if (!item.selectedChoiceId) {
+      const unanswered = document.createElement("div");
+      unanswered.className = "unanswered-note";
+      unanswered.textContent = "No answer was selected — counted as incorrect.";
+      card.append(unanswered);
+    }
 
     item.choices.forEach((choice) => {
       const row = document.createElement("div");
@@ -303,8 +433,24 @@ $("#homeLink").addEventListener("click", (event) => {
   state.quiz = null;
   state.answers = {};
   state.result = null;
+  state.submitting = false;
   showView("setup");
 });
+
+
+function restoreCooldown() {
+  const saved = Number(localStorage.getItem(COOLDOWN_STORAGE_KEY) || 0);
+  if (saved > Date.now()) {
+    state.cooldownUntil = saved;
+    renderCooldown();
+    state.cooldownTimer = setInterval(renderCooldown, 1000);
+  } else {
+    localStorage.removeItem(COOLDOWN_STORAGE_KEY);
+    refreshGenerationButtons(false);
+  }
+}
+
+restoreCooldown();
 
 function escapeHtml(value) {
   return String(value ?? "")

@@ -136,6 +136,8 @@ function canStartGeneration(req) {
     return {
       ok: false,
       status: 429,
+      retryAfterSeconds: 30,
+      retryAt: new Date(now + 30 * 1000).toISOString(),
       message: "Another quiz is being generated right now. Please wait a moment and try again."
     };
   }
@@ -148,6 +150,8 @@ function canStartGeneration(req) {
       return {
         ok: false,
         status: 429,
+        retryAfterSeconds: waitSeconds,
+        retryAt: new Date(now + waitSeconds * 1000).toISOString(),
         message: `The quiz generator is cooling down to protect the API limit. Please try again in about ${waitSeconds} second${waitSeconds === 1 ? "" : "s"}. Existing quizzes can still be retaken.`
       };
     }
@@ -160,9 +164,12 @@ function canStartGeneration(req) {
   if (recent.length >= GENERATION_LIMIT) {
     const waitMs = GENERATION_WINDOW_MS - (now - recent[0]);
     const waitMinutes = Math.max(1, Math.ceil(waitMs / 60000));
+    const retryAfterSeconds = Math.max(60, Math.ceil(waitMs / 1000));
     return {
       ok: false,
       status: 429,
+      retryAfterSeconds,
+      retryAt: new Date(now + retryAfterSeconds * 1000).toISOString(),
       message: `Generation limit reached for this device/network. Please try again in about ${waitMinutes} minute${waitMinutes === 1 ? "" : "s"}. Existing quizzes can still be retaken without using AI.`
     };
   }
@@ -178,15 +185,29 @@ function finishGeneration() {
   activeGenerations = Math.max(0, activeGenerations - 1);
 }
 
+function parseRetrySeconds(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text) return null;
+
+  const hours = Number(text.match(/([0-9]+(?:\.[0-9]+)?)h/)?.[1] || 0);
+  const minutes = Number(text.match(/([0-9]+(?:\.[0-9]+)?)m/)?.[1] || 0);
+  const seconds = Number(text.match(/([0-9]+(?:\.[0-9]+)?)s/)?.[1] || 0);
+  const total = (hours * 3600) + (minutes * 60) + seconds;
+  return total > 0 ? Math.ceil(total) : null;
+}
+
 function friendlyGenerationError(error) {
   const message = String(error?.message || "");
   const status = Number(error?.status || 0);
 
   if (status === 429 || /rate limit|too many requests|429/i.test(message)) {
-    const retryMatch = message.match(/try again in\s+([^\.]+(?:\.[0-9]+s)?)/i);
+    const retryMatch = message.match(/try again in\s+([0-9hms.]+)/i);
     const retry = retryMatch?.[1]?.trim();
+    const retryAfterSeconds = parseRetrySeconds(retry);
     return {
       status: 429,
+      retryAfterSeconds,
+      retryAt: retryAfterSeconds ? new Date(Date.now() + retryAfterSeconds * 1000).toISOString() : null,
       message: retry
         ? `OpenAI's generation rate limit has been reached. Please try again in ${retry}. Retakes of an existing quiz do not use additional AI generation.`
         : "OpenAI's generation rate limit has been reached. Please wait and try again later. Retakes of an existing quiz do not use additional AI generation."
@@ -251,7 +272,11 @@ app.post("/api/quiz/from-file", upload.single("file"), async (req, res) => {
     }
 
     const gate = canStartGeneration(req);
-    if (!gate.ok) return res.status(gate.status).json({ error: gate.message });
+    if (!gate.ok) return res.status(gate.status).json({
+      error: gate.message,
+      retryAfterSeconds: gate.retryAfterSeconds || null,
+      retryAt: gate.retryAt || null
+    });
 
     try {
       const quiz = await generateQuizFromDocument({
@@ -266,7 +291,11 @@ app.post("/api/quiz/from-file", upload.single("file"), async (req, res) => {
     } catch (error) {
       console.error("Quiz generation error:", error);
       const friendly = friendlyGenerationError(error);
-      return res.status(friendly.status).json({ error: friendly.message });
+      return res.status(friendly.status).json({
+        error: friendly.message,
+        retryAfterSeconds: friendly.retryAfterSeconds || null,
+        retryAt: friendly.retryAt || null
+      });
     } finally {
       finishGeneration();
     }
@@ -289,7 +318,11 @@ app.post("/api/quiz/from-topic", async (req, res) => {
   }
 
   const gate = canStartGeneration(req);
-  if (!gate.ok) return res.status(gate.status).json({ error: gate.message });
+  if (!gate.ok) return res.status(gate.status).json({
+    error: gate.message,
+    retryAfterSeconds: gate.retryAfterSeconds || null,
+    retryAt: gate.retryAt || null
+  });
 
   try {
     const quiz = await generateQuizFromTopic(topic);
@@ -300,7 +333,11 @@ app.post("/api/quiz/from-topic", async (req, res) => {
   } catch (error) {
     console.error("Topic generation error:", error);
     const friendly = friendlyGenerationError(error);
-    return res.status(friendly.status).json({ error: friendly.message });
+    return res.status(friendly.status).json({
+      error: friendly.message,
+      retryAfterSeconds: friendly.retryAfterSeconds || null,
+      retryAt: friendly.retryAt || null
+    });
   } finally {
     finishGeneration();
   }
@@ -314,9 +351,10 @@ app.post("/api/quiz/:sessionId/submit", (req, res) => {
   }
 
   const answers = req.body?.answers || {};
+  const autoSubmitted = req.body?.autoSubmitted === true;
   const questions = session.attempt.questions;
   const unanswered = questions.filter((question) => !answers[question.id]);
-  if (unanswered.length) {
+  if (unanswered.length && !autoSubmitted) {
     return res.status(400).json({ error: `Answer all questions before submitting. ${unanswered.length} unanswered.` });
   }
 
@@ -344,6 +382,8 @@ app.post("/api/quiz/:sessionId/submit", (req, res) => {
     score: correct,
     total,
     percent: total ? Math.round((correct / total) * 100) : 0,
+    unanswered: unanswered.length,
+    autoSubmitted,
     review
   });
 });
