@@ -1,6 +1,8 @@
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
+const MAX_LOCAL_FILE_BYTES = 10 * 1024 * 1024;
+
 const state = {
   quiz: null,
   answers: {},
@@ -60,10 +62,13 @@ $("#fileForm").addEventListener("submit", async (event) => {
   showError("#setupError");
   const file = $("#fileInput").files?.[0];
   if (!file) return showError("#setupError", "Please choose a study file first.");
+  if (file.size > MAX_LOCAL_FILE_BYTES) {
+    return showError("#setupError", "This file is larger than 10 MB. Please use a smaller study file.");
+  }
 
   const form = new FormData();
   form.append("file", file);
-  setLoading(true, "Reading the complete file…", "The server is extracting the text, analyzing each section, mapping all topics, and then creating questions.");
+  setLoading(true, "Reading the complete file…", "Optimized mode reads the accepted material once to build a full coverage map, then creates the quiz from that compact map.");
   try {
     const quiz = await requestJson("/api/quiz/from-file", { method: "POST", body: form });
     loadQuiz(quiz);
@@ -106,9 +111,12 @@ function loadQuiz(quiz) {
   $("#quizTitle").textContent = quiz.title;
   $("#quizSummary").textContent = quiz.summary || "Answer all questions, then submit to check your work.";
   $("#questionCount").textContent = `${quiz.questionCount} questions`;
-  $("#readStats").textContent = quiz.diagnostics?.wordsRead
-    ? `${quiz.diagnostics.wordsRead.toLocaleString()} words read · ${quiz.diagnostics.chunksRead} section${quiz.diagnostics.chunksRead === 1 ? "" : "s"}`
-    : "";
+  const diagnostics = quiz.diagnostics || {};
+  if (diagnostics.wordsRead) {
+    $("#readStats").textContent = `${diagnostics.wordsRead.toLocaleString()} words read · optimized 2-pass generation${diagnostics.cached ? " · cached" : ""}`;
+  } else {
+    $("#readStats").textContent = `Optimized generation${diagnostics.cached ? " · cached" : ""}`;
+  }
   renderQuestions();
   updateAnswerStatus();
   showView("quiz");

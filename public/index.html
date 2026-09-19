@@ -27,9 +27,10 @@
         <label class="upload-box" for="fileInput">
           <input id="fileInput" name="file" type="file" accept=".pdf,.docx,.pptx,.txt,.md" hidden />
           <strong id="fileLabel">Choose a study file</strong>
-          <span>PDF, DOCX, PPTX, TXT, or MD · up to 20 MB</span>
+          <span>PDF, DOCX, PPTX, TXT, or MD · up to 10 MB</span>
         </label>
         <button class="primary" type="submit">Read file and create quiz</button>
+        <p class="usage-note">Optimized mode reads the accepted document in full, creates one compact coverage map, then generates up to 30 questions from that map. Very long files are rejected instead of being silently truncated.</p>
       </form>
 
       <form id="topicForm" class="source-form hidden">

@@ -1,9 +1,18 @@
 import OpenAI from "openai";
 import crypto from "crypto";
-import { chunkText } from "./documentParser.js";
 
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+let client = null;
 const MODEL = process.env.OPENAI_MODEL || "gpt-5.6-luna";
+const MAX_QUESTIONS = Math.max(10, Math.min(30, Number(process.env.MAX_QUESTIONS || 30)));
+
+function getOpenAIClient() {
+  const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY is not configured on the server.");
+  }
+  if (!client) client = new OpenAI({ apiKey });
+  return client;
+}
 
 function parseJsonLoose(text) {
   const cleaned = String(text || "")
@@ -20,192 +29,175 @@ function parseJsonLoose(text) {
     if (firstObj >= 0 && lastObj > firstObj) {
       return JSON.parse(cleaned.slice(firstObj, lastObj + 1));
     }
-    throw new Error("The AI returned an invalid response format. Please try again.");
+    throw new Error("The AI returned an invalid response format. Please try again later.");
   }
 }
 
-async function askJson(prompt) {
-  const response = await client.responses.create({
+async function askJson(prompt, maxOutputTokens = 8000) {
+  const response = await getOpenAIClient().responses.create({
     model: MODEL,
-    input: prompt
+    input: prompt,
+    max_output_tokens: maxOutputTokens
   });
   return parseJsonLoose(response.output_text);
 }
 
 function uniq(items) {
-  return [...new Set(items.map((x) => String(x || "").trim()).filter(Boolean))];
+  return [...new Set((items || []).map((x) => String(x || "").trim()).filter(Boolean))];
 }
 
-function normalizeAnalysis(raw, index) {
+function normalizeCoverage(raw, sourceName) {
+  const topics = (Array.isArray(raw?.topics) ? raw.topics : [])
+    .map((topic, index) => ({
+      id: String(topic.id || `T${index + 1}`).trim(),
+      name: String(topic.name || `Topic ${index + 1}`).trim(),
+      importance: ["high", "medium", "low"].includes(topic.importance) ? topic.importance : "medium",
+      studyPoints: uniq(topic.studyPoints).slice(0, 18)
+    }))
+    .filter((topic) => topic.name && topic.studyPoints.length);
+
   return {
-    chunk: index + 1,
-    headings: uniq(raw.headings || []),
-    topics: uniq(raw.topics || []),
-    keyFacts: uniq(raw.keyFacts || []),
-    terms: uniq(raw.terms || []),
-    processes: uniq(raw.processes || []),
-    relationships: uniq(raw.relationships || [])
+    title: String(raw?.title || sourceName || "Study Quiz").trim(),
+    summary: String(raw?.summary || "").trim(),
+    topics
   };
 }
 
-async function analyzeChunk(chunk, index, total) {
+function computeQuestionCount(wordCount, topics) {
+  const topicCount = topics.length;
+  const studyPointCount = topics.reduce((sum, topic) => sum + topic.studyPoints.length, 0);
+
+  // Keep generation useful but economical. Every major topic can receive at least one item,
+  // while longer files receive more questions up to the configured cap.
+  const byLength = Math.ceil(wordCount / 450);
+  const byCoverage = Math.ceil(studyPointCount / 2.5);
+  return Math.max(10, Math.min(MAX_QUESTIONS, Math.max(topicCount, byLength, byCoverage)));
+}
+
+async function buildCoverageMapFromDocument({ text, sourceName }) {
   const prompt = `
-You are analyzing part ${index + 1} of ${total} of a study document.
-Read EVERY part of the supplied text. Do not skip lists, definitions, examples, tables represented as text, steps, dates, formulas, names, comparisons, or exceptions.
+You are a careful study-material analyst. Read the ENTIRE document below from beginning to end before answering.
+The document has already been limited to a size that fits in this request, so do not sample, truncate, or ignore later sections.
+
+Create a compact coverage map that preserves every substantive topic in the file. Combine only closely related subtopics. Keep the number of MAJOR topics at 18 or fewer, but preserve smaller subtopics as specific study points under the correct major topic.
 
 Return ONLY valid JSON in this exact shape:
-{
-  "headings": ["..."],
-  "topics": ["..."],
-  "keyFacts": ["..."],
-  "terms": ["term — concise meaning"],
-  "processes": ["ordered process or sequence"],
-  "relationships": ["cause/effect, comparison, association, distinction, or rule"]
-}
-
-Rules:
-- Preserve important facts accurately.
-- Be comprehensive but concise.
-- Include enough information to write factual multiple-choice questions later.
-- Do not invent information not present in the text.
-
-DOCUMENT PART:
-<<<
-${chunk}
->>>
-`;
-  return normalizeAnalysis(await askJson(prompt), index);
-}
-
-function computeQuestionCount(wordCount, topicCount) {
-  const byLength = Math.ceil(wordCount / 220);
-  const byTopics = Math.max(0, topicCount * 2);
-  return Math.max(10, Math.min(60, Math.max(byLength, byTopics)));
-}
-
-async function buildCoverageMap(analyses, wordCount, sourceName) {
-  const compact = analyses.map((a) => ({
-    chunk: a.chunk,
-    headings: a.headings,
-    topics: a.topics,
-    keyFacts: a.keyFacts,
-    terms: a.terms,
-    processes: a.processes,
-    relationships: a.relationships
-  }));
-
-  const prompt = `
-You are creating a comprehensive study coverage map from an entire uploaded document named "${sourceName}".
-The chunk analyses below collectively cover the full document.
-
-Merge overlapping items, preserve distinct subtopics, and identify the teachable topics that a quiz must cover.
-Return ONLY valid JSON:
 {
   "title": "short study title",
   "summary": "2-4 sentence overview",
   "topics": [
     {
       "id": "T1",
-      "name": "topic name",
+      "name": "major topic",
       "importance": "high|medium|low",
-      "studyPoints": ["specific point", "specific point"]
+      "studyPoints": [
+        "specific factual point from the document",
+        "definition, process, distinction, example, formula, date, exception, or relationship"
+      ]
     }
   ]
 }
 
-Requirements:
-- Cover ALL substantive topics found in the analyses.
-- Do not merge unrelated topics just to shorten the list.
-- Every study point must be supported by the analyses.
-- Keep topic names clear and student-friendly.
+Coverage requirements:
+- Inspect all headings, paragraphs, lists, definitions, tables represented as text, examples, steps, formulas, comparisons, dates, names, exceptions, and conclusions.
+- Include every substantive section somewhere in the coverage map.
+- Keep study points concise but specific enough to write factual questions from them later.
+- Do not add outside facts and do not guess missing information.
+- Do not repeat the same point under several topics.
 
-FULL-DOCUMENT ANALYSES:
-${JSON.stringify(compact)}
+SOURCE FILE: ${sourceName}
+
+FULL DOCUMENT:
+<<<DOCUMENT START>>>
+${text}
+<<<DOCUMENT END>>>
 `;
 
-  const map = await askJson(prompt);
-  const topics = Array.isArray(map.topics) ? map.topics : [];
-  const normalizedTopics = topics.map((t, i) => ({
-    id: t.id || `T${i + 1}`,
-    name: String(t.name || `Topic ${i + 1}`).trim(),
-    importance: ["high", "medium", "low"].includes(t.importance) ? t.importance : "medium",
-    studyPoints: uniq(t.studyPoints || [])
-  })).filter((t) => t.studyPoints.length);
-
-  return {
-    title: String(map.title || sourceName).trim(),
-    summary: String(map.summary || "").trim(),
-    topics: normalizedTopics,
-    questionCount: computeQuestionCount(wordCount, normalizedTopics.length)
-  };
+  const raw = await askJson(prompt, 7000);
+  return normalizeCoverage(raw, sourceName);
 }
 
-function allocateQuestions(topics, total) {
-  if (!topics.length) return [];
-  const weights = topics.map((t) => {
-    const importanceWeight = t.importance === "high" ? 1.5 : t.importance === "low" ? 0.8 : 1;
-    return Math.max(1, t.studyPoints.length) * importanceWeight;
-  });
-  const weightSum = weights.reduce((a, b) => a + b, 0);
-  const allocation = topics.map((t, i) => ({
-    topicId: t.id,
-    topicName: t.name,
-    count: Math.max(1, Math.floor((weights[i] / weightSum) * total))
-  }));
+async function buildCoverageMapFromTopic(topicText) {
+  const prompt = `
+Create a concise, broadly representative study coverage map for the topic "${topicText}" using standard educational knowledge.
 
-  let used = allocation.reduce((s, x) => s + x.count, 0);
-  let cursor = 0;
-  while (used < total) {
-    allocation[cursor % allocation.length].count += 1;
-    used += 1;
-    cursor += 1;
-  }
-  while (used > total) {
-    const candidates = allocation.filter((x) => x.count > 1);
-    if (!candidates.length) break;
-    candidates[cursor % candidates.length].count -= 1;
-    used -= 1;
-    cursor += 1;
-  }
-  return allocation;
+Return ONLY valid JSON:
+{
+  "title": "short title",
+  "summary": "2-4 sentence overview",
+  "topics": [
+    {
+      "id": "T1",
+      "name": "major subtopic",
+      "importance": "high|medium|low",
+      "studyPoints": ["specific fact or concept", "specific fact or concept"]
+    }
+  ]
 }
 
-function normalizeQuestion(q, fallbackTopicId, index) {
-  const choices = Array.isArray(q.choices) ? q.choices.slice(0, 4) : [];
+Use 4-12 major subtopics. Keep study points concise and suitable for objective multiple-choice questions.
+`;
+
+  const raw = await askJson(prompt, 4500);
+  return normalizeCoverage(raw, topicText);
+}
+
+function normalizeQuestion(question, fallbackTopicId) {
+  const choices = Array.isArray(question?.choices) ? question.choices.slice(0, 4) : [];
   if (choices.length !== 4) return null;
 
-  const normalizedChoices = choices.map((c, i) => ({
-    id: String(c.id || `C${i + 1}`),
-    text: String(c.text || "").trim()
+  const normalizedChoices = choices.map((choice, index) => ({
+    id: String(choice.id || ["A", "B", "C", "D"][index]).trim(),
+    text: String(choice.text || "").trim()
   }));
-  if (normalizedChoices.some((c) => !c.text)) return null;
 
-  const correctChoiceId = String(q.correctChoiceId || "");
-  if (!normalizedChoices.some((c) => c.id === correctChoiceId)) return null;
+  if (normalizedChoices.some((choice) => !choice.text)) return null;
+  if (new Set(normalizedChoices.map((choice) => choice.text.toLowerCase())).size !== 4) return null;
+
+  const correctChoiceId = String(question.correctChoiceId || "").trim();
+  if (!normalizedChoices.some((choice) => choice.id === correctChoiceId)) return null;
+
+  const stem = String(question.question || "").trim();
+  if (!stem) return null;
 
   return {
     id: crypto.randomUUID(),
-    topicId: String(q.topicId || fallbackTopicId),
-    question: String(q.question || "").trim(),
+    topicId: String(question.topicId || fallbackTopicId || "REVIEW").trim(),
+    question: stem,
     choices: normalizedChoices,
     correctChoiceId,
-    explanation: String(q.explanation || "").trim(),
-    sourceNote: String(q.sourceNote || "").trim(),
-    orderSeed: index
+    explanation: String(question.explanation || "").trim(),
+    sourceNote: String(question.sourceNote || "").trim()
   };
 }
 
-async function generateQuestionBatch(topic, count, globalContext) {
+function dedupeQuestions(questions) {
+  const seen = new Set();
+  return questions.filter((question) => {
+    const key = question.question.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+async function generateQuestionsFromCoverage(coverage, questionCount) {
+  const compactCoverage = {
+    title: coverage.title,
+    summary: coverage.summary,
+    topics: coverage.topics
+  };
+
   const prompt = `
-Create ${count} high-quality multiple-choice study questions for the topic below.
-The questions are for a student studying the uploaded material, so they must be answerable ONLY from the supplied study points and context.
+Create ${questionCount} high-quality single-answer multiple-choice questions using ONLY the coverage map below.
+The coverage map was produced after reading the entire source material.
 
 Return ONLY valid JSON:
 {
   "questions": [
     {
-      "topicId": "${topic.id}",
-      "question": "clear question",
+      "topicId": "T1",
+      "question": "clear, self-contained question",
       "choices": [
         {"id":"A","text":"..."},
         {"id":"B","text":"..."},
@@ -213,141 +205,82 @@ Return ONLY valid JSON:
         {"id":"D","text":"..."}
       ],
       "correctChoiceId": "A",
-      "explanation": "why the correct answer is correct, based on the material",
-      "sourceNote": "short study point or concept being tested"
+      "explanation": "1-2 concise sentences explaining the answer from the study material",
+      "sourceNote": "short study point being tested"
     }
   ]
 }
 
-Question-quality rules:
-- Exactly 4 choices per question and exactly 1 correct answer.
-- Avoid trick questions, "all of the above," and "none of the above."
-- Distractors must be plausible but clearly wrong according to the material.
-- Mix recall, comprehension, comparison, sequence, and simple application when supported by the material.
-- Do not ask about information absent from the supplied material.
-- Avoid duplicate questions or merely rewording the same fact.
-- Spread questions across the study points rather than concentrating on one point.
+Requirements:
+- Produce as close to exactly ${questionCount} questions as possible.
+- Exactly four distinct choices and exactly one defensible correct answer for every question.
+- Use only facts contained in the coverage map; do not import outside facts.
+- Cover EVERY major topic at least once before adding extra questions to high-importance or content-rich topics.
+- Within each topic, spread questions across different study points so the quiz represents the whole material.
+- Mix factual recall, definitions, comparisons, sequences, relationships, and simple application only when the coverage map supports them.
+- Avoid duplicates, trick questions, "all of the above," and "none of the above."
+- Keep explanations concise to reduce unnecessary output.
 
-TOPIC:
-${JSON.stringify(topic)}
-
-BROADER STUDY CONTEXT:
-${globalContext}
+COVERAGE MAP:
+${JSON.stringify(compactCoverage)}
 `;
 
-  const result = await askJson(prompt);
-  return Array.isArray(result.questions) ? result.questions : [];
-}
+  const result = await askJson(prompt, 11000);
+  const rawQuestions = Array.isArray(result?.questions) ? result.questions : [];
+  const normalized = rawQuestions
+    .map((question) => normalizeQuestion(question, coverage.topics[0]?.id))
+    .filter(Boolean);
 
-function dedupeQuestions(questions) {
-  const seen = new Set();
-  return questions.filter((q) => {
-    const key = q.question.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  return dedupeQuestions(normalized).slice(0, questionCount);
 }
 
 export async function generateQuizFromDocument({ text, wordCount, sourceName }) {
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error("OPENAI_API_KEY is missing. Add it to your .env file and restart the server.");
+  const coverage = await buildCoverageMapFromDocument({ text, sourceName });
+  if (!coverage.topics.length) {
+    throw new Error("No usable study topics could be identified in the document.");
   }
 
-  const chunks = chunkText(text, 14000);
-  const analyses = [];
-  // Sequential processing avoids rate-limit spikes and guarantees every chunk is examined.
-  for (let i = 0; i < chunks.length; i += 1) {
-    analyses.push(await analyzeChunk(chunks[i], i, chunks.length));
-  }
-
-  const coverage = await buildCoverageMap(analyses, wordCount, sourceName);
-  if (!coverage.topics.length) throw new Error("No usable study topics could be identified in the document.");
-
-  const allocation = allocateQuestions(coverage.topics, coverage.questionCount);
-  const globalContext = JSON.stringify({
-    title: coverage.title,
-    summary: coverage.summary,
-    topics: coverage.topics.map((t) => ({ id: t.id, name: t.name, studyPoints: t.studyPoints }))
-  });
-
-  let rawQuestions = [];
-  for (const item of allocation) {
-    const topic = coverage.topics.find((t) => t.id === item.topicId);
-    const batch = await generateQuestionBatch(topic, item.count, globalContext);
-    rawQuestions.push(...batch.map((q, i) => normalizeQuestion(q, topic.id, i)).filter(Boolean));
-  }
-
-  rawQuestions = dedupeQuestions(rawQuestions);
-
-  // If formatting/deduplication reduced the count, add a small repair batch.
-  if (rawQuestions.length < coverage.questionCount) {
-    const missing = coverage.questionCount - rawQuestions.length;
-    const repairTopic = {
-      id: "MIXED",
-      name: "Whole-document review",
-      importance: "high",
-      studyPoints: coverage.topics.flatMap((t) => t.studyPoints.map((p) => `${t.name}: ${p}`))
-    };
-    const repair = await generateQuestionBatch(repairTopic, missing, globalContext);
-    rawQuestions.push(...repair.map((q, i) => normalizeQuestion(q, q.topicId || "MIXED", i)).filter(Boolean));
-    rawQuestions = dedupeQuestions(rawQuestions).slice(0, coverage.questionCount);
+  const questionCount = computeQuestionCount(wordCount, coverage.topics);
+  const questions = await generateQuestionsFromCoverage(coverage, questionCount);
+  if (!questions.length) {
+    throw new Error("The quiz could not be generated from this material. Please try again later.");
   }
 
   return {
-    title: coverage.title,
-    summary: coverage.summary,
-    topics: coverage.topics,
-    questionCount: rawQuestions.length,
-    questions: rawQuestions,
+    ...coverage,
+    questionCount: questions.length,
+    questions,
     diagnostics: {
-      chunksRead: chunks.length,
       wordsRead: wordCount,
-      model: MODEL
+      passes: 2,
+      model: MODEL,
+      optimized: true
     }
   };
 }
 
 export async function generateQuizFromTopic(topicText) {
-  const syntheticText = `Study topic requested by the user: ${topicText}`;
-  const prompt = `
-Create a comprehensive but concise study map for the topic: "${topicText}".
-Return ONLY valid JSON:
-{
-  "title": "...",
-  "summary": "2-4 sentences",
-  "topics": [
-    {"id":"T1","name":"...","importance":"high|medium|low","studyPoints":["..."]}
-  ]
-}
-
-Use standard, widely accepted educational knowledge. Break the subject into its major subtopics so the quiz can cover it broadly.
-`;
-  const map = await askJson(prompt);
-  const coverage = {
-    title: map.title || topicText,
-    summary: map.summary || "",
-    topics: (map.topics || []).map((t, i) => ({
-      id: t.id || `T${i + 1}`,
-      name: t.name || `Topic ${i + 1}`,
-      importance: t.importance || "medium",
-      studyPoints: uniq(t.studyPoints || [])
-    })).filter((t) => t.studyPoints.length)
-  };
-  const count = Math.max(10, Math.min(30, coverage.topics.length * 3 || 10));
-  const allocation = allocateQuestions(coverage.topics, count);
-  const context = JSON.stringify(coverage);
-  let questions = [];
-  for (const item of allocation) {
-    const topic = coverage.topics.find((t) => t.id === item.topicId);
-    const batch = await generateQuestionBatch(topic, item.count, context);
-    questions.push(...batch.map((q, i) => normalizeQuestion(q, topic.id, i)).filter(Boolean));
+  const coverage = await buildCoverageMapFromTopic(topicText);
+  if (!coverage.topics.length) {
+    throw new Error("No usable study areas could be created for that topic.");
   }
-  questions = dedupeQuestions(questions).slice(0, count);
+
+  const estimatedWords = Math.max(1000, coverage.topics.reduce((sum, topic) => sum + topic.studyPoints.length * 90, 0));
+  const questionCount = Math.max(10, Math.min(24, computeQuestionCount(estimatedWords, coverage.topics)));
+  const questions = await generateQuestionsFromCoverage(coverage, questionCount);
+  if (!questions.length) {
+    throw new Error("The quiz could not be generated for that topic. Please try again later.");
+  }
+
   return {
     ...coverage,
     questionCount: questions.length,
     questions,
-    diagnostics: { chunksRead: 1, wordsRead: syntheticText.split(/\s+/).length, model: MODEL }
+    diagnostics: {
+      wordsRead: null,
+      passes: 2,
+      model: MODEL,
+      optimized: true
+    }
   };
 }
